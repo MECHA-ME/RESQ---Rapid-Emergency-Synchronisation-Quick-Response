@@ -30,10 +30,22 @@ export default function NearbyHospitals({
 
   const lat = incident.location?.lat;
   const lng = incident.location?.lng;
+  const snapshotKey = ((incident as any).nearbyHospitals || []).map((h: any) => h.id).join(',');
   const onLoadedRef = useRef(onLoaded);
   onLoadedRef.current = onLoaded;
 
   useEffect(() => {
+    // Prefer the triage SOS snapshot stored on the incident (the exact 30 km
+    // GPS ring computed when SOS was sent) — always available, even offline.
+    const snapshot = (incident as any).nearbyHospitals as NearbyHospital[] | undefined;
+    if (snapshot && snapshot.length > 0) {
+      setHospitals(snapshot);
+      setSource('Triage snapshot • GPS 30 km ring');
+      setLoading(false);
+      setLoadError('');
+      onLoadedRef.current?.(snapshot);
+      return;
+    }
     if (typeof lat !== 'number' || typeof lng !== 'number') {
       setLoading(false);
       return;
@@ -57,7 +69,8 @@ export default function NearbyHospitals({
     return () => {
       cancelled = true;
     };
-  }, [lat, lng, radiusKm, reloadNonce]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lat, lng, radiusKm, reloadNonce, snapshotKey]);
 
   const acceptedIds: string[] = (incident as any).acceptedHospitals || [];
   const selectedId: string | undefined = (incident as any).selectedHospitalId;

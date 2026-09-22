@@ -300,7 +300,7 @@ app.post("/api/incidents/:id/escalate", (req, res) => {
 });
 
 // Complete Calling Agent Call & Transition into AI-Assisted Dispatch Flow
-app.post("/api/incidents/:id/complete-call-dispatch", (req, res) => {
+app.post("/api/incidents/:id/complete-call-dispatch", async (req, res) => {
   const inc = db.incidents.find(i => i.id === req.params.id);
   if (!inc) return res.status(404).json({ error: "Not found" });
 
@@ -365,10 +365,17 @@ app.post("/api/incidents/:id/complete-call-dispatch", (req, res) => {
   };
   db.trafficNotifications.unshift(trafficNotif);
 
-  // Q-ARES Flowchart: Destination Readiness Check & Hospital Coordination
-  inc.notifiedHospitals = db.users.filter(u => u.role === 'HOSPITAL').map(h => h.id);
+  // Q-ARES Flowchart: Destination Readiness Check & Hospital Coordination —
+  // triage targets the 30 km GPS ring around the SOS point (snapshot stored).
+  await targetTriageHospitals(inc, 30);
   inc.acceptedHospitals = db.users.filter(u => u.role === 'HOSPITAL').map(h => h.id);
   inc.selectedHospitalId = 'hospital_1';
+  const h1 = db.users.find((u: any) => u.id === 'hospital_1');
+  if (h1) {
+    inc.selectedHospitalName = h1.name;
+    if (h1.location) inc.selectedHospitalLocation = h1.location;
+  }
+  persistDb();
 
   res.json(inc);
 });
@@ -699,14 +706,15 @@ app.post("/api/incidents/:id/accept", (req, res) => {
   }
 });
 
-// Send to hospitals
-app.post("/api/incidents/:id/hospital-request", (req, res) => {
+// Send triage SOS to hospitals inside the 30 km GPS ring around the SOS point
+app.post("/api/incidents/:id/hospital-request", async (req, res) => {
   const inc = db.incidents.find(i => i.id === req.params.id);
   if (!inc) return res.status(404).json({ error: "Not found" });
-  
+
   inc.status = 'HOSPITAL_COORDINATION';
-  inc.notifiedHospitals = db.users.filter(u => u.role === 'HOSPITAL').map(h => h.id);
+  await targetTriageHospitals(inc, 30);
   inc.timeline.push({ status: 'HOSPITAL_COORDINATION', timestamp: Date.now() });
+  persistDb();
   res.json(inc);
 });
 
@@ -752,20 +760,10 @@ app.post("/api/incidents/:id/hospital-select", (req, res) => {
 
 // GPS-centered real hospital search: real facilities within radiusKm of the
 // patient (OpenStreetMap Overpass, free + keyless), registry units first.
+// Shared by the live endpoint AND the triage SOS targeting below.
 const NEARBY_CACHE = new Map<string, { at: number; data: any }>();
-app.get("/api/hospitals/nearby", async (req, res) => {
-  const lat = Number(req.query.lat);
-  const lng = Number(req.query.lng);
-  const radiusKm = Math.min(50, Math.max(1, Number(req.query.radiusKm) || 30));
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-    return res.status(400).json({ error: "lat and lng query params are required" });
-  }
+async function findNearbyHospitals(lat: number, lng: number, radiusKm: number) {
   const radiusM = Math.round(radiusKm * 1000);
-  const key = `${lat.toFixed(3)},${lng.toFixed(3)},${radiusKm}`;
-  const cached = NEARBY_CACHE.get(key);
-  if (cached && Date.now() - cached.at < 120000) {
-    return res.json({ ...cached.data, cached: true });
-  }
 
   const registry = () => db.users
     .filter((u: any) => u.role === 'HOSPITAL' && u.location)
@@ -841,18 +839,52 @@ app.get("/api/hospitals/nearby", async (req, res) => {
       });
     }
     osm.sort((a, b) => a.distanceKm - b.distanceKm);
-    const data = {
+    return {
       hospitals: [...registry().filter(h => h.distanceKm <= radiusKm), ...osm.slice(0, 30)],
       source: 'OSM+RESQ',
       radiusKm,
       center: { lat, lng },
     };
-    NEARBY_CACHE.set(key, { at: Date.now(), data });
-    res.json({ ...data, cached: false });
   } catch (e) {
-    res.json({ hospitals: registry(), source: 'RESQ-registry (OSM unreachable)', radiusKm, center: { lat, lng }, cached: false });
+    return { hospitals: registry(), source: 'RESQ-registry (OSM unreachable)', radiusKm, center: { lat, lng } };
   }
+}
+
+app.get("/api/hospitals/nearby", async (req, res) => {
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  const radiusKm = Math.min(50, Math.max(1, Number(req.query.radiusKm) || 30));
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return res.status(400).json({ error: "lat and lng query params are required" });
+  }
+  const key = `${lat.toFixed(3)},${lng.toFixed(3)},${radiusKm}`;
+  const cached = NEARBY_CACHE.get(key);
+  if (cached && Date.now() - cached.at < 120000) {
+    return res.json({ ...cached.data, cached: true });
+  }
+  const data = await findNearbyHospitals(lat, lng, radiusKm);
+  NEARBY_CACHE.set(key, { at: Date.now(), data });
+  res.json({ ...data, cached: false });
 });
+
+// Triage SOS targeting: hospitals inside the 30 km GPS ring around the SOS
+// point. Notified registry units get the in-app triage; the full ring
+// (registry + real OSM facilities) is snapshotted onto the incident so the
+// driver always sees options even if the live search is down later.
+async function targetTriageHospitals(inc: any, radiusKm = 30) {
+  const loc = inc.location;
+  if (!loc || !Number.isFinite(Number(loc.lat)) || !Number.isFinite(Number(loc.lng))) {
+    inc.notifiedHospitals = db.users.filter((u: any) => u.role === 'HOSPITAL').map((h: any) => h.id);
+    inc.nearbyHospitals = [];
+    inc.triageHospitalCount = inc.notifiedHospitals.length;
+    return;
+  }
+  const { hospitals } = await findNearbyHospitals(Number(loc.lat), Number(loc.lng), radiusKm);
+  const inRing = hospitals.filter((h: any) => h.distanceKm <= radiusKm);
+  inc.notifiedHospitals = inRing.filter((h: any) => h.source === 'RESQ').map((h: any) => h.id);
+  inc.nearbyHospitals = inRing;
+  inc.triageHospitalCount = inRing.length;
+}
 
 // Update status (Patient Picked, In Transit, Reached)
 app.post("/api/incidents/:id/status", (req, res) => {

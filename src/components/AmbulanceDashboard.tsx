@@ -369,7 +369,11 @@ export default function AmbulanceDashboard({ state, userId, fetchState }: any) {
 }
 
 function ActiveMissionView({ incident, state, requestHospitals, selectHospital, updateStatus }: any) {
-  const triageSent = (incident.notifiedHospitals?.length || 0) > 0;
+  // Triage SOS counts if registry units were notified OR a GPS-ring snapshot exists
+  const snapshotCount = ((incident as any).nearbyHospitals?.length || 0);
+  const triageSent = (incident.notifiedHospitals?.length || 0) > 0 || snapshotCount > 0;
+  const triageTotal = (incident as any).triageHospitalCount
+    ?? ((incident.notifiedHospitals?.length || 0) + snapshotCount);
   const needsHospitals = incident.status === 'RESPONDER_EN_ROUTE' && !triageSent;
   // Strict order: triage SOS first, then the driver may pick the patient
   // (en route, triage sent awaiting replies, or hospital already chosen)
@@ -384,6 +388,14 @@ function ActiveMissionView({ incident, state, requestHospitals, selectHospital, 
 
   // Nearby real hospitals (GPS, 30 km) lifted here so the map can pin them
   const [nearbyForMap, setNearbyForMap] = useState<{ id: string; name: string; location: { lat: number; lng: number } }[]>([]);
+  // Seed map pins from the triage snapshot the moment it lands on the incident
+  useEffect(() => {
+    const snap = ((incident as any).nearbyHospitals || []).map((h: any) => ({ id: h.id, name: h.name, location: h.location }));
+    setNearbyForMap((prev) => {
+      const key = (l: any[]) => l.map((h: any) => h.id).join(',');
+      return key(snap) === key(prev) ? prev : snap;
+    });
+  }, [incident]);
   // Satellite-focus signal for the map (style + fly-to on demand)
   const [styleSignal, setStyleSignal] = useState<{ style: 'streets' | 'humanitarian' | 'tactical' | 'satellite'; focus?: { lat: number; lng: number }; nonce: number } | null>(null);
   const destHospital = getSelectedHospital(incident, state.users);
@@ -520,11 +532,11 @@ function ActiveMissionView({ incident, state, requestHospitals, selectHospital, 
         <div className="space-y-4 mt-6 border-t border-brand-border pt-6">
           <h3 className="font-bold text-brand-text">Mission Progress</h3>
 
-          {/* STEP 1: SEND TRIAGE SOS TO HOSPITALS (25km) — first tap after accepting */}
+          {/* STEP 1: SEND TRIAGE SOS TO HOSPITALS (30km GPS ring) — first tap after accepting */}
           {triageSent ? (
             <div className="flex items-center gap-2 px-4 py-2.5 bg-blue-50/60 border border-blue-200 rounded-xl text-xs font-bold text-blue-800">
               <span className="px-2 py-0.5 bg-blue-600 text-white rounded-full text-[10px] font-black tracking-wider shrink-0">STEP 1 ✓</span>
-              <span>Triage SOS transmitted to {incident.notifiedHospitals.length} hospital{incident.notifiedHospitals.length === 1 ? '' : 's'} (25km)</span>
+              <span>Triage SOS transmitted to {triageTotal} hospital{triageTotal === 1 ? '' : 's'} (30km GPS ring)</span>
             </div>
           ) : needsHospitals ? (
             <div className="text-center p-6 bg-blue-50/70 border border-blue-200 rounded-2xl space-y-3">
@@ -532,14 +544,14 @@ function ActiveMissionView({ incident, state, requestHospitals, selectHospital, 
                 <span className="inline-block px-2.5 py-0.5 bg-blue-600 text-white rounded-full text-[10px] font-black tracking-wider mb-2">STEP 1</span>
                 <h4 className="text-sm font-black text-blue-900">Transmit Clinical Triage to Area Trauma Centers</h4>
                 <p className="text-xs text-blue-700 mt-1">
-                  Transmits condition ({incident.conditionCategory || incident.condition || 'Emergency'}), acuity, and vital needs to all available hospitals (25km) to reserve an intake bay.
+                  Transmits condition ({incident.conditionCategory || incident.condition || 'Emergency'}), acuity, and vital needs to hospitals within 30km of the patient GPS to reserve an intake bay.
                 </p>
               </div>
               <button
                 onClick={requestHospitals}
                 className="px-6 py-3.5 bg-red-600 hover:bg-red-700 active:scale-[0.99] text-white font-black text-xs sm:text-sm tracking-wide rounded-xl transition-all shadow-md inline-flex items-center gap-2"
               >
-                <span>🚨 SEND TRIAGE SOS TO HOSPITALS (25km)</span>
+                <span>🚨 SEND TRIAGE SOS TO HOSPITALS (30km)</span>
               </button>
             </div>
           ) : null}
@@ -597,7 +609,7 @@ function ActiveMissionView({ incident, state, requestHospitals, selectHospital, 
           </div>
 
           {/* STEP 4: Real nearby hospitals (GPS 30 km) — unlocked only after Patient Picked */}
-          {incident.notifiedHospitals.length > 0 && (
+          {triageSent && (
             <div className="space-y-3 pt-2">
               <h3 className="font-bold text-brand-text">
                 <span className="inline-block px-2.5 py-0.5 bg-slate-900 text-white rounded-full text-[10px] font-black tracking-wider mr-2">STEP 4</span>

@@ -140,11 +140,25 @@ export interface SmsLog {
   timestamp: number;
 }
 
+export interface NearbyHospitalInfo {
+  id: string;
+  name: string;
+  location: Location;
+  distanceKm: number;
+  source: string;
+  emergency?: boolean;
+  phone?: string | null;
+  capacity?: HospitalCapacity | null;
+}
+
 export interface Incident {
   id: string;
   sosNumber?: number;
   source?: SosSource;
   keypadSos?: KeypadSosInfo;
+  /** GPS-ring triage snapshot: hospitals within 30 km of the SOS point. */
+  nearbyHospitals?: NearbyHospitalInfo[];
+  triageHospitalCount?: number;
   type: 'AMBULANCE';
   patientId: string;
   callerRole?: 'PATIENT' | 'BYSTANDER';
