@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { Incident, UserRole, User } from '../types';
 import { useLiveGeolocation } from '../utils/useLiveGeolocation';
+import { getSelectedHospital } from '../utils/hospital';
 import { 
   Navigation, 
   MapPin, 
@@ -29,6 +30,10 @@ interface LiveEmergencyMapProps {
   height?: string;
   showControls?: boolean;
   onCorridorAction?: (incidentId: string, action: 'ACKNOWLEDGE' | 'SYNC_ALL_GREEN' | 'DISPATCH_ESCORT') => void;
+  /** Real nearby hospitals to pin (teal markers) alongside the registry ones. */
+  extraHospitals?: { id: string; name: string; location: { lat: number; lng: number } }[];
+  /** External command: switch basemap and/or fly to a facility (satellite view). */
+  styleSignal?: { style: 'streets' | 'humanitarian' | 'tactical' | 'satellite'; focus?: { lat: number; lng: number }; nonce: number } | null;
 }
 
 // Realistic San Francisco Emergency Route Coordinates
@@ -41,6 +46,28 @@ const ROUTE_PHASE_1_COORDS: [number, number][] = [
   [37.7788, -122.4155], // 8th & Hyde St (Junction 3)
   [37.7793, -122.4162], // Patient Location: 1090 Market St (Civic Center)
 ];
+
+// 100% open-source tile layers — all rendered from OpenStreetMap data:
+// - streets: OSM Standard | - humanitarian: OSM Humanitarian (HOT, built for disaster response)
+// - tactical: CARTO Voyager (OSM data, high-contrast ops view) | - satellite: Esri World Imagery
+const TILE_LAYERS: Record<'streets' | 'humanitarian' | 'tactical' | 'satellite', { url: string; maxZoom: number }> = {
+  streets: {
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    maxZoom: 19,
+  },
+  humanitarian: {
+    url: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+    maxZoom: 19,
+  },
+  tactical: {
+    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+    maxZoom: 20,
+  },
+  satellite: {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    maxZoom: 19,
+  },
+};
 
 const ROUTE_PHASE_2_COORDS: [number, number][] = [
   [37.7793, -122.4162], // Patient Location: 1090 Market St
@@ -59,8 +86,11 @@ export default function LiveEmergencyMap({
   users = [],
   height = '320px',
   showControls = true,
-  onCorridorAction
+  onCorridorAction,
+  extraHospitals = [],
+  styleSignal = null
 }: LiveEmergencyMapProps) {
+  const extrasKey = (extraHospitals || []).map(h => h.id).join(',');
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const layersRef = useRef<{
@@ -97,6 +127,8 @@ export default function LiveEmergencyMap({
   const activeRouteCoords = isPhase2 ? ROUTE_PHASE_2_COORDS : ROUTE_PHASE_1_COORDS;
   const responder = users.find(u => u.id === incident.assignedResponderId);
   const hospital = users.find(u => u.id === incident.selectedHospitalId);
+  // Chosen facility may be a real nearby hospital (exact GPS stored on incident)
+  const selHospital = getSelectedHospital(incident, users);
 
   // Calculate vehicle position along route based on progress
   const getInterpolatedPosition = (coords: [number, number][], progress: number): [number, number] => {
@@ -161,7 +193,7 @@ export default function LiveEmergencyMap({
     || (isPhase2 ? incident.location : responder?.location)
     || incident.location;
   const routeDest = livePos?.routeDestination
-    || (isPhase2 ? hospital?.location : incident.location)
+    || (isPhase2 ? (selHospital?.location || hospital?.location) : incident.location)
     || incident.location;
   const originKey = routeOrigin ? `${routeOrigin.lat?.toFixed(4)},${routeOrigin.lng?.toFixed(4)}` : 'none';
   const destKey = routeDest ? `${routeDest.lat?.toFixed(4)},${routeDest.lng?.toFixed(4)}` : 'none';
@@ -272,30 +304,8 @@ export default function LiveEmergencyMap({
     shownRef.current = null;
     setMapEpoch(e => e + 1);
 
-    // 100% open-source tile layers — all rendered from OpenStreetMap data:
-    // - streets: OSM Standard | - humanitarian: OSM Humanitarian (HOT, built for disaster response)
-    // - tactical: CARTO Voyager (OSM data, high-contrast ops view)
-    const tileLayers = {
-      streets: {
-        url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-        maxZoom: 19,
-      },
-      humanitarian: {
-        url: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
-        maxZoom: 19,
-      },
-      tactical: {
-        url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-        maxZoom: 20,
-      },
-      satellite: {
-        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-        maxZoom: 19,
-      },
-    };
-
-    const tileLayer = L.tileLayer(tileLayers[mapStyle].url, {
-      maxZoom: tileLayers[mapStyle].maxZoom,
+    const tileLayer = L.tileLayer(TILE_LAYERS[mapStyle].url, {
+      maxZoom: TILE_LAYERS[mapStyle].maxZoom,
       crossOrigin: true
     }).addTo(map);
 
@@ -359,12 +369,14 @@ export default function LiveEmergencyMap({
 
     layersRef.current.patientMarker = patientMarker;
 
-    // 2. Hospital Marker — exact facility location from the server user record
+    // 2. Hospital Marker — chosen facility's exact GPS (registry or real nearby)
     const hospitalPos: [number, number] =
-      hospital?.location && Number.isFinite(hospital.location.lat) && Number.isFinite(hospital.location.lng)
-        ? [hospital.location.lat, hospital.location.lng]
-        : [37.7554, -122.4047];
-    const hospitalName = hospital?.name || 'SF General Trauma Center';
+      selHospital?.location && Number.isFinite(selHospital.location.lat) && Number.isFinite(selHospital.location.lng)
+        ? [selHospital.location.lat, selHospital.location.lng]
+        : hospital?.location && Number.isFinite(hospital.location.lat) && Number.isFinite(hospital.location.lng)
+          ? [hospital.location.lat, hospital.location.lng]
+          : [37.7554, -122.4047];
+    const hospitalName = selHospital?.name || hospital?.name || 'SF General Trauma Center';
     const hospitalHtml = `
       <div class="relative flex items-center justify-center">
         <div class="w-8 h-8 rounded-xl bg-emerald-600 border-2 border-white shadow-lg flex items-center justify-center text-white text-xs font-black">
@@ -433,6 +445,27 @@ export default function LiveEmergencyMap({
 
     layersRef.current.junctionMarkers = junctionMarkers;
 
+    // 3b. Real nearby hospitals (GPS 30 km search) — teal pins with distance labels
+    (extraHospitals || []).forEach((h) => {
+      if (!h.location || !Number.isFinite(h.location.lat) || !Number.isFinite(h.location.lng)) return;
+      if (hospital && h.id === hospital.id) return; // registry pin already drawn
+      const hHtml = `
+        <div class="relative flex items-center justify-center">
+          <div class="w-7 h-7 rounded-xl bg-teal-600 border-2 border-white shadow-lg flex items-center justify-center text-white text-xs font-black">
+            H
+          </div>
+          <div class="absolute -top-7 whitespace-nowrap px-2 py-0.5 rounded-full bg-teal-950 text-white text-[9px] font-bold shadow border border-teal-500/40">
+            ${h.name.split(' ').slice(0, 3).join(' ')}
+          </div>
+        </div>
+      `;
+      L.marker([h.location.lat, h.location.lng], {
+        icon: L.divIcon({ html: hHtml, className: 'custom-nearby-marker', iconSize: [28, 28], iconAnchor: [14, 14] })
+      })
+        .bindPopup(`<b>${h.name}</b><br/>Nearby hospital (GPS search)`)
+        .addTo(map);
+    });
+
     // 4. Moving Ambulance Marker assets (placed on the map only once a real unit accepts)
     const responderName = responder?.name || 'Ambulance Unit 1';
     const ambulanceHtml = `
@@ -483,11 +516,45 @@ export default function LiveEmergencyMap({
 
     return () => {
       if (mapInstanceRef.current) {
+        try {
+          // Stop in-flight pan/zoom animations first — otherwise their
+          // completion callbacks fire on the destroyed map and throw.
+          (mapInstanceRef.current as any).stop?.();
+        } catch (e) { /* ignore */ }
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
       }
     };
-  }, [mapStyle, isPhase2]);
+  }, [isPhase2, extrasKey]);
+
+  // Swap basemap tiles in place (no map recreation → no animation crashes)
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const layer = layersRef.current.tileLayer;
+    if (!map || !layer) return;
+    const next = TILE_LAYERS[mapStyle];
+    try {
+      (layer as any).options.maxZoom = next.maxZoom;
+      map.setMaxZoom(next.maxZoom);
+      if ((layer as any)._url !== next.url) layer.setUrl(next.url);
+    } catch (e) { /* keep current tiles */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapStyle]);
+
+  // External basemap command (e.g. "view this hospital on satellite" + fly-to)
+  const styleNonce = styleSignal?.nonce;
+  useEffect(() => {
+    if (!styleSignal) return;
+    setMapStyle(styleSignal.style);
+    if (styleSignal.focus && mapInstanceRef.current) {
+      try {
+        mapInstanceRef.current.setView(
+          [styleSignal.focus.lat, styleSignal.focus.lng], 15, { animate: true }
+        );
+      } catch (e) { /* keep current view */ }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [styleNonce]);
 
   // Redraw the route on real streets once OSRM geometry arrives (or map recreates)
   useEffect(() => {

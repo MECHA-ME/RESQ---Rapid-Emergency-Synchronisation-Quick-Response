@@ -60,11 +60,16 @@ function computeLiveDriverPosition(inc: any) {
   const patients = inc.location || { lat: 37.7793, lng: -122.4162 };
   const responder = db.users.find((u: any) => u.id === inc.assignedResponderId);
   const hospital = db.users.find((u: any) => u.id === inc.selectedHospitalId);
+  // Chosen hospital may be a real nearby facility (OSM) outside our registry —
+  // route on proper roads to its exact GPS, not the registry fallback.
+  const hospitalLoc = inc.selectedHospitalLocation && Number.isFinite(Number(inc.selectedHospitalLocation.lat)) && Number.isFinite(Number(inc.selectedHospitalLocation.lng))
+    ? { lat: Number(inc.selectedHospitalLocation.lat), lng: Number(inc.selectedHospitalLocation.lng) }
+    : hospital?.location;
 
   const isPhase2 = ['PATIENT_PICKED', 'IN_TRANSIT', 'REACHED_DESTINATION', 'COMPLETED'].includes(inc.status);
 
   const origin = isPhase2 ? patients : responder?.location || patients;
-  const destination = isPhase2 ? hospital?.location || patients : patients;
+  const destination = isPhase2 ? hospitalLoc || patients : patients;
   const startedMs = isPhase2
     ? inc.phase2StartedAt || inc.dispatchStartedAt || inc.createdAt
     : inc.dispatchStartedAt || inc.acceptedAt || inc.createdAt;
@@ -719,16 +724,134 @@ app.post("/api/incidents/:id/hospital-response", (req, res) => {
   res.json(inc);
 });
 
-// Driver selects hospital
+// Driver selects hospital — works for registry hospitals AND real nearby
+// facilities found via GPS search (hospitalName + hospitalLocation supplied).
 app.post("/api/incidents/:id/hospital-select", (req, res) => {
-  const { hospitalId } = req.body;
+  const { hospitalId, hospitalName, hospitalLocation } = req.body;
   const inc = db.incidents.find(i => i.id === req.params.id);
   if (!inc) return res.status(404).json({ error: "Not found" });
-  
+
   inc.selectedHospitalId = hospitalId;
+  if (typeof hospitalName === 'string' && hospitalName.trim()) {
+    inc.selectedHospitalName = hospitalName.trim();
+  }
+  if (hospitalLocation && Number.isFinite(Number(hospitalLocation.lat)) && Number.isFinite(Number(hospitalLocation.lng))) {
+    inc.selectedHospitalLocation = { lat: Number(hospitalLocation.lat), lng: Number(hospitalLocation.lng) };
+  }
+  // Fill name + exact GPS from the registry when the driver picks a known unit
+  const known = db.users.find((u: any) => u.id === hospitalId);
+  if (known) {
+    if (!inc.selectedHospitalName) inc.selectedHospitalName = known.name;
+    if (!inc.selectedHospitalLocation && known.location) inc.selectedHospitalLocation = known.location;
+  }
   inc.status = 'HOSPITAL_SELECTED';
   inc.timeline.push({ status: 'HOSPITAL_SELECTED', timestamp: Date.now() });
+  persistDb();
   res.json(inc);
+});
+
+// GPS-centered real hospital search: real facilities within radiusKm of the
+// patient (OpenStreetMap Overpass, free + keyless), registry units first.
+const NEARBY_CACHE = new Map<string, { at: number; data: any }>();
+app.get("/api/hospitals/nearby", async (req, res) => {
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  const radiusKm = Math.min(50, Math.max(1, Number(req.query.radiusKm) || 30));
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return res.status(400).json({ error: "lat and lng query params are required" });
+  }
+  const radiusM = Math.round(radiusKm * 1000);
+  const key = `${lat.toFixed(3)},${lng.toFixed(3)},${radiusKm}`;
+  const cached = NEARBY_CACHE.get(key);
+  if (cached && Date.now() - cached.at < 120000) {
+    return res.json({ ...cached.data, cached: true });
+  }
+
+  const registry = () => db.users
+    .filter((u: any) => u.role === 'HOSPITAL' && u.location)
+    .map((u: any) => ({
+      id: u.id,
+      name: u.name,
+      location: u.location,
+      distanceKm: Number(haversineKm({ lat, lng }, u.location).toFixed(1)),
+      source: 'RESQ',
+      emergency: true,
+      capacity: u.capacity || null,
+    }))
+    .sort((a: any, b: any) => a.distanceKm - b.distanceKm);
+
+  const runOverpass = async (): Promise<any> => {
+    const q = `[out:json][timeout:40];(node["amenity"="hospital"](around:${radiusM},${lat},${lng});way["amenity"="hospital"](around:${radiusM},${lat},${lng}););out center 30;`;
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 45000);
+    try {
+      const r = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          // Overpass requires an identifying User-Agent; requests without one get 406.
+          'User-Agent': 'RESQ-Emergency-Sync/1.0 (educational demo)',
+        },
+        body: 'data=' + encodeURIComponent(q),
+        signal: ctrl.signal,
+      });
+      if (!r.ok) throw new Error('overpass ' + r.status);
+      return await r.json();
+    } finally {
+      clearTimeout(t);
+    }
+  };
+
+  try {
+    // Overpass slows down under load (429/504/timeouts) — retry with backoff
+    let j: any = null;
+    let lastErr: any = null;
+    for (const waitMs of [0, 3000, 8000]) {
+      if (waitMs) await new Promise((r) => setTimeout(r, waitMs));
+      try {
+        j = await runOverpass();
+        lastErr = null;
+        break;
+      } catch (e1: any) {
+        lastErr = e1;
+        console.error('Overpass attempt failed, will retry:', e1?.message || e1);
+      }
+    }
+    if (!j) throw lastErr || new Error('overpass unavailable');
+    const els = Array.isArray(j?.elements) ? j.elements : [];
+    const seen = new Set<string>();
+    const osm: any[] = [];
+    for (const e of els) {
+      const c = e.type === 'node'
+        ? { lat: e.lat, lng: e.lon }
+        : (e.center ? { lat: e.center.lat, lng: e.center.lon } : null);
+      if (!c || !Number.isFinite(c.lat) || !Number.isFinite(c.lng)) continue;
+      const name = (e.tags && e.tags.name) || 'Unnamed Hospital';
+      const k = name + '|' + c.lat.toFixed(4) + ',' + c.lng.toFixed(4);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      osm.push({
+        id: `osm_${e.type}_${e.id}`,
+        name,
+        location: c,
+        distanceKm: Number(haversineKm({ lat, lng }, c).toFixed(1)),
+        source: 'OSM',
+        emergency: e.tags?.emergency === 'yes',
+        phone: e.tags?.phone || null,
+      });
+    }
+    osm.sort((a, b) => a.distanceKm - b.distanceKm);
+    const data = {
+      hospitals: [...registry().filter(h => h.distanceKm <= radiusKm), ...osm.slice(0, 30)],
+      source: 'OSM+RESQ',
+      radiusKm,
+      center: { lat, lng },
+    };
+    NEARBY_CACHE.set(key, { at: Date.now(), data });
+    res.json({ ...data, cached: false });
+  } catch (e) {
+    res.json({ hospitals: registry(), source: 'RESQ-registry (OSM unreachable)', radiusKm, center: { lat, lng }, cached: false });
+  }
 });
 
 // Update status (Patient Picked, In Transit, Reached)

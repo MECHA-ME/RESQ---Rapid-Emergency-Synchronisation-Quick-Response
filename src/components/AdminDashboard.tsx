@@ -205,7 +205,8 @@ export default function AdminDashboard({ state, fetchState, onReset }: any) {
           <div className="space-y-3">
             {filteredIncidents.map((inc: Incident) => {
               const responder = state.users.find((u: any) => u.id === inc.assignedResponderId);
-              const hospital = state.users.find((u: any) => u.id === inc.selectedHospitalId);
+              const hospital: any = state.users.find((u: any) => u.id === inc.selectedHospitalId)
+                || ((inc as any).selectedHospitalName ? { id: inc.selectedHospitalId, name: (inc as any).selectedHospitalName } : undefined);
               const isBystander = inc.callerRole === 'BYSTANDER';
               const incFeedbacks = state.feedbacks?.filter((f: any) => f.incidentId === inc.id) || [];
 

@@ -274,7 +274,8 @@ export default function TrafficPoliceDashboard({ state, userId, fetchState }: an
           ) : (
             activeCorridors.map((inc: Incident) => {
               const responder = state.users.find((u: any) => u.id === inc.assignedResponderId);
-              const hospital = state.users.find((u: any) => u.id === inc.selectedHospitalId);
+              const hospital: any = state.users.find((u: any) => u.id === inc.selectedHospitalId)
+                || ((inc as any).selectedHospitalName ? { id: inc.selectedHospitalId, name: (inc as any).selectedHospitalName } : undefined);
               const corridor = inc.greenCorridor!;
               const isPhase1 = corridor.phase === 'EN_ROUTE_TO_PATIENT';
               const isPhase2 = corridor.phase === 'IN_TRANSIT_TO_HOSPITAL' || inc.status === 'IN_TRANSIT' || inc.status === 'PATIENT_PICKED';

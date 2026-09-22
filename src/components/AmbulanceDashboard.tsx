@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { AppState, Incident, User } from '../types';
-import { Truck, MapPin, CheckCircle, Navigation, Clock, Radio, Bot, Download, FileText } from 'lucide-react';
+import { Truck, MapPin, CheckCircle, Navigation, Clock, Radio, Download, FileText } from 'lucide-react';
 import FeedbackForm from './FeedbackForm';
 import StatusBadge from './StatusBadge';
 import IncidentLifecycleHistory from './IncidentLifecycleHistory';
 import LiveEmergencyMap from './LiveEmergencyMap';
 import QaresFlowchartPipeline from './QaresFlowchartPipeline';
+import NearbyHospitals from './NearbyHospitals';
+import { getSelectedHospital } from '../utils/hospital';
 import { downloadAllHistoryReport, downloadAllHistoryPDF } from '../utils/downloadReport';
 
 function DriverAcceptanceTimer({ incident }: { incident: Incident }) {
@@ -101,11 +103,12 @@ export default function AmbulanceDashboard({ state, userId, fetchState }: any) {
 
   // Driver locks the destination via "Select & Route" — ambulance starts transit
   // to the chosen hospital only AFTER this choice (Step 2 → Step 4 → Step 3).
-  const selectHospital = async (incidentId: string, hospitalId: string) => {
+  // Works for registry units and real nearby facilities (name + exact GPS).
+  const selectHospital = async (incidentId: string, h: { id: string; name?: string; location?: { lat: number; lng: number } }) => {
     await fetch(`/api/incidents/${incidentId}/hospital-select`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hospitalId })
+      body: JSON.stringify({ hospitalId: h.id, hospitalName: h.name, hospitalLocation: h.location })
     });
     await fetch(`/api/incidents/${incidentId}/status`, {
       method: 'POST',
@@ -195,7 +198,7 @@ export default function AmbulanceDashboard({ state, userId, fetchState }: any) {
               incident={myIncident} 
               state={state} 
               requestHospitals={() => requestHospitals(myIncident.id)}
-              selectHospital={(hId: string) => selectHospital(myIncident.id, hId)}
+              selectHospital={(h: any) => selectHospital(myIncident.id, h)}
               updateStatus={(s: string) => updateStatus(myIncident.id, s)}
             />
           ) : (
@@ -379,8 +382,11 @@ function ActiveMissionView({ incident, state, requestHospitals, selectHospital, 
   const canReach = !!incident.selectedHospitalId &&
     (incident.status === 'PATIENT_PICKED' || incident.status === 'IN_TRANSIT');
 
-  const hospitalList = state.users.filter((u: User) => u.role === 'HOSPITAL');
-  const acceptedHospitalsData = hospitalList.filter((h: User) => incident.acceptedHospitals.includes(h.id));
+  // Nearby real hospitals (GPS, 30 km) lifted here so the map can pin them
+  const [nearbyForMap, setNearbyForMap] = useState<{ id: string; name: string; location: { lat: number; lng: number } }[]>([]);
+  // Satellite-focus signal for the map (style + fly-to on demand)
+  const [styleSignal, setStyleSignal] = useState<{ style: 'streets' | 'humanitarian' | 'tactical' | 'satellite'; focus?: { lat: number; lng: number }; nonce: number } | null>(null);
+  const destHospital = getSelectedHospital(incident, state.users);
 
   return (
     <div className="w-full space-y-6">
@@ -417,7 +423,7 @@ function ActiveMissionView({ incident, state, requestHospitals, selectHospital, 
               <Radio size={14} className="text-emerald-700 animate-pulse shrink-0" />
               <span className="truncate">
                 {incident.status === 'IN_TRANSIT' || incident.status === 'PATIENT_PICKED'
-                  ? `Corridor: Patient Site ➔ ${state.users.find((u: any) => u.id === incident.selectedHospitalId)?.name || 'Emergency Trauma Bay'}`
+                  ? `Corridor: Patient Site ➔ ${destHospital?.name || 'Emergency Trauma Bay'}`
                   : `Corridor: Station Base ➔ ${incident.address || 'Patient Location'}`}
               </span>
             </div>
@@ -452,6 +458,8 @@ function ActiveMissionView({ incident, state, requestHospitals, selectHospital, 
             role="AMBULANCE_DRIVER"
             users={state.users}
             height="290px"
+            extraHospitals={nearbyForMap}
+            styleSignal={styleSignal}
           />
         </div>
 
@@ -588,7 +596,7 @@ function ActiveMissionView({ incident, state, requestHospitals, selectHospital, 
             )}
           </div>
 
-          {/* STEP 4: Hospital selecting options — unlocked only after Patient Picked */}
+          {/* STEP 4: Real nearby hospitals (GPS 30 km) — unlocked only after Patient Picked */}
           {incident.notifiedHospitals.length > 0 && (
             <div className="space-y-3 pt-2">
               <h3 className="font-bold text-brand-text">
@@ -600,39 +608,14 @@ function ActiveMissionView({ incident, state, requestHospitals, selectHospital, 
                   🔒 Select & Route unlocks after Step 2 — tap PATIENT PICKED once the patient is on board.
                 </p>
               ) : (
-                <>
-                  {acceptedHospitalsData.length === 0 && (
-                    <p className="text-brand-muted animate-pulse text-sm">Waiting for hospitals to accept...</p>
-                  )}
-
-                  <div className="space-y-3">
-                    {acceptedHospitalsData.map((h: User) => {
-                      const isSelected = incident.selectedHospitalId === h.id;
-                      return (
-                        <div key={h.id} className={`p-4 border rounded-xl flex items-center justify-between ${isSelected ? 'border-emerald-600 bg-emerald-600 text-white shadow-md' : 'border-brand-green bg-green-50'}`}>
-                          <div>
-                            <p className={`font-bold ${isSelected ? 'text-white' : 'text-brand-green'}`}>{h.name}</p>
-                            <p className={`text-sm ${isSelected ? 'text-emerald-100' : 'text-brand-green'}`}>
-                              {isSelected ? 'Destination locked — routing' : 'Ready for intake'}
-                            </p>
-                          </div>
-                          {isSelected ? (
-                            <span className="px-4 py-2 bg-white text-emerald-700 font-black rounded-xl text-sm">
-                              ✓ Selected
-                            </span>
-                          ) : (
-                            <button
-                              onClick={() => selectHospital(h.id)}
-                              className="px-4 py-2 min-h-[48px] bg-brand-green hover:opacity-90 text-white font-semibold rounded-xl text-sm transition-colors"
-                            >
-                              Select & Route
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </>
+                <NearbyHospitals
+                  incident={incident}
+                  radiusKm={30}
+                  selectable
+                  onSelect={(h) => selectHospital(h)}
+                  onSatelliteView={(h) => setStyleSignal({ style: 'satellite', focus: h.location, nonce: Date.now() })}
+                  onLoaded={(list) => setNearbyForMap(list.map((h) => ({ id: h.id, name: h.name, location: h.location })))}
+                />
               )}
             </div>
           )}

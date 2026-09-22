@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import FeedbackForm from './FeedbackForm';
 import KeypadPhoneSimulator from './KeypadPhoneSimulator';
+import NearbyHospitals from './NearbyHospitals';
 import StatusBadge from './StatusBadge';
 import AdditionalInfoView from './AdditionalInfoView';
 import UnitAcceptanceMonitor from './UnitAcceptanceMonitor';
@@ -575,7 +576,8 @@ export default function PatientDashboard({ state, userId, fetchState }: any) {
 
 function ActiveIncidentView({ incident, users, onBack, onEditInfo, fetchState }: any) {
   const responder = users.find((u: any) => u.id === incident.assignedResponderId);
-  const hospital = users.find((u: any) => u.id === incident.selectedHospitalId);
+  const hospital: any = users.find((u: any) => u.id === incident.selectedHospitalId)
+    || (incident.selectedHospitalName ? { id: incident.selectedHospitalId, name: incident.selectedHospitalName } : undefined);
 
   const getFirstAidTips = (condition?: string) => {
     switch (condition) {
@@ -812,6 +814,11 @@ function ActiveIncidentView({ incident, users, onBack, onEditInfo, fetchState }:
             users={users}
             height="260px"
           />
+
+          {/* Real hospitals within 30 km of the patient (GPS search) */}
+          <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
+            <NearbyHospitals incident={incident} radiusKm={30} />
+          </div>
         </div>
 
         {responder && (

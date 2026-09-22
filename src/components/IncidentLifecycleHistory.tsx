@@ -58,7 +58,8 @@ export default function IncidentLifecycleHistory({
   };
 
   const responder = state.users.find((u) => u.id === incident.assignedResponderId);
-  const selectedHospital = state.users.find((u) => u.id === incident.selectedHospitalId);
+  const selectedHospital: any = state.users.find((u) => u.id === incident.selectedHospitalId)
+    || ((incident as any).selectedHospitalName ? { name: (incident as any).selectedHospitalName } : undefined);
   const trafficPolice = state.users.find((u) => u.role === 'TRAFFIC_POLICE');
   const feedbacks = state.feedbacks?.filter((f: Feedback) => f.incidentId === incident.id) || [];
 

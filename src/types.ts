@@ -166,6 +166,8 @@ export interface Incident {
   acceptedHospitals: string[];
   rejectedHospitals: string[];
   selectedHospitalId?: string;
+  selectedHospitalName?: string;
+  selectedHospitalLocation?: Location;
   createdAt: number;
   acceptanceDeadline?: number;
   timeline: { status: IncidentStatus; timestamp: number }[];

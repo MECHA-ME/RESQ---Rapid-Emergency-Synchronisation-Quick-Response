@@ -6,7 +6,8 @@ import { jsPDF } from 'jspdf';
  */
 export function generateIncidentReportText(incident: Incident, state: AppState): string {
   const responder = state.users.find((u) => u.id === incident.assignedResponderId);
-  const selectedHospital = state.users.find((u) => u.id === incident.selectedHospitalId);
+  const selectedHospital: any = state.users.find((u) => u.id === incident.selectedHospitalId)
+    || ((incident as any).selectedHospitalName ? { name: (incident as any).selectedHospitalName } : undefined);
   const feedbacks = state.feedbacks?.filter((f: Feedback) => f.incidentId === incident.id) || [];
 
   const createdDate = new Date(incident.createdAt).toLocaleString();
@@ -170,7 +171,8 @@ function renderIncidentToPDF(doc: jsPDF, incident: Incident, state: AppState, st
   };
 
   const responder = state.users.find((u) => u.id === incident.assignedResponderId);
-  const selectedHospital = state.users.find((u) => u.id === incident.selectedHospitalId);
+  const selectedHospital: any = state.users.find((u) => u.id === incident.selectedHospitalId)
+    || ((incident as any).selectedHospitalName ? { name: (incident as any).selectedHospitalName } : undefined);
   const feedbacks = state.feedbacks?.filter((f: Feedback) => f.incidentId === incident.id) || [];
 
   // Top Header Banner
