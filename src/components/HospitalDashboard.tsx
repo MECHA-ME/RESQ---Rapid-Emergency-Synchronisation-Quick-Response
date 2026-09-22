@@ -20,6 +20,7 @@ import FeedbackForm from './FeedbackForm';
 import StatusBadge from './StatusBadge';
 import IncidentLifecycleHistory from './IncidentLifecycleHistory';
 import LiveEmergencyMap from './LiveEmergencyMap';
+import { haversineKm } from '../utils/hospital';
 import { downloadAllHistoryReport, downloadAllHistoryPDF } from '../utils/downloadReport';
 
 export default function HospitalDashboard({ state, userId, fetchState }: any) {
@@ -70,13 +71,37 @@ export default function HospitalDashboard({ state, userId, fetchState }: any) {
     }
   };
 
-  // Incidents that notified this hospital and are waiting for a response
-  const pendingRequests = state.incidents.filter((i: Incident) => 
-    i.status === 'HOSPITAL_COORDINATION' &&
+  // Triage SOS sent to this hospital and still awaiting a response.
+  // Stays visible while the driver works (coordination → picked → transit)
+  // until a destination is locked elsewhere or the mission closes.
+  const ACTIVE_TRIAGE = ['HOSPITAL_COORDINATION', 'HOSPITAL_SELECTED', 'PATIENT_PICKED', 'IN_TRANSIT'];
+  const pendingRequests = state.incidents.filter((i: Incident) =>
+    ACTIVE_TRIAGE.includes(i.status) &&
     i.notifiedHospitals.includes(userId) &&
     !i.acceptedHospitals.includes(userId) &&
-    !i.rejectedHospitals.includes(userId)
+    !i.rejectedHospitals.includes(userId) &&
+    (!i.selectedHospitalId || i.selectedHospitalId === userId)
   );
+
+  // Ring monitoring: every other live SOS in the network (outside our 30 km
+  // ring or already handled) — read-only situational awareness, never blank.
+  const ACTIVE_ALL = ['NOTIFIED', 'AUTO_ESCALATION_STARTED', 'RESPONDER_EN_ROUTE', ...ACTIVE_TRIAGE];
+  const ringMonitoring = state.incidents.filter((i: Incident) =>
+    ACTIVE_ALL.includes(i.status) &&
+    !i.notifiedHospitals.includes(userId) &&
+    (!i.selectedHospitalId || i.selectedHospitalId !== userId)
+  );
+
+  const distFromMe = (inc: Incident): number | null => {
+    try {
+      const a = (currentHospital as any)?.location;
+      const b = (inc as any)?.location;
+      if (!a || !b) return null;
+      return haversineKm(a, b);
+    } catch (e) {
+      return null;
+    }
+  };
 
   // Incidents this hospital accepted, waiting for ambulance
   const incomingPatients = state.incidents.filter((i: Incident) =>
@@ -123,9 +148,9 @@ export default function HospitalDashboard({ state, userId, fetchState }: any) {
           >
             <Building2 size={16} />
             <span>Live ER Intake</span>
-            {(incomingPatients.length > 0 || pendingRequests.length > 0) && (
+            {(incomingPatients.length > 0 || pendingRequests.length > 0 || ringMonitoring.length > 0) && (
               <span className="px-1.5 py-0.2 bg-white text-emerald-700 rounded-full text-[10px] font-mono font-black">
-                {incomingPatients.length + pendingRequests.length}
+                {incomingPatients.length + pendingRequests.length + ringMonitoring.length}
               </span>
             )}
           </button>
@@ -220,7 +245,7 @@ export default function HospitalDashboard({ state, userId, fetchState }: any) {
 
       {/* 2. Trauma Intake Standby / Live Incoming Transports Card (Middle of User Image) */}
       <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-2xs text-center flex flex-col items-center justify-center min-h-[140px]">
-        {incomingPatients.length === 0 && pendingRequests.length === 0 ? (
+        {incomingPatients.length === 0 && pendingRequests.length === 0 && ringMonitoring.length === 0 ? (
           <div className="space-y-2 animate-in fade-in duration-200">
             <div className="w-12 h-12 mx-auto rounded-2xl bg-gray-50 border border-gray-200 text-gray-400 flex items-center justify-center">
               <Building2 size={24} className="stroke-[1.7]" />
@@ -310,6 +335,41 @@ export default function HospitalDashboard({ state, userId, fetchState }: any) {
                           <Check size={14} />
                           <span>Accept &amp; Reserve Intake Bay</span>
                         </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Network ring monitoring — other live SOS (outside our ring) */}
+            {ringMonitoring.length > 0 && (
+              <div className="space-y-2">
+                <span className="text-[10px] font-black tracking-wider text-slate-500 uppercase flex items-center gap-1">
+                  <Navigation size={12} className="text-slate-400" />
+                  Network SOS Monitoring ({ringMonitoring.length}) — outside 30 km ring
+                </span>
+                {ringMonitoring.map((inc: Incident) => {
+                  const d = distFromMe(inc);
+                  const assignedDriver = state.users.find((u: any) => u.id === inc.assignedResponderId);
+                  return (
+                    <div key={inc.id} className="p-3 rounded-2xl border border-slate-200 bg-slate-50/70 space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-black text-gray-800 truncate">
+                          {inc.conditionCategory || inc.condition || 'Emergency'}
+                        </p>
+                        <StatusBadge status={inc.status} size="sm" />
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-gray-500">
+                        <span className="truncate">
+                          {(inc as any).sosNumber ? `#SOS-${(inc as any).sosNumber} • ` : ''}
+                          {assignedDriver?.name || 'Awaiting unit'} • {inc.address || 'Location shared'}
+                        </span>
+                        {d != null && (
+                          <span className="font-mono font-bold text-slate-600 shrink-0 ml-2">
+                            {d < 1 ? `${Math.round(d * 1000)} m` : `${d.toFixed(1)} km`}
+                          </span>
+                        )}
                       </div>
                     </div>
                   );

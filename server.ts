@@ -997,7 +997,10 @@ app.post("/api/hospitals/:id/capacity", (req, res) => {
   res.json({ success: true, capacity: hospital.capacity });
 });
 
-// Update a user's live GPS location (sent by the device Geolocation API)
+// Update a user's live GPS location (sent by the device Geolocation API).
+// Facilities (hospitals) are fixed map features — a staff phone's GPS must
+// never move them, or distance search + routing corrupt. Their live fix is
+// kept separately as liveLocation; location stays authoritative.
 app.post("/api/users/:id/location", (req, res) => {
   const { lat, lng } = req.body;
   const user = db.users.find((u: any) => u.id === req.params.id);
@@ -1007,6 +1010,11 @@ app.post("/api/users/:id/location", (req, res) => {
   const ln = Number(lng);
   if (!Number.isFinite(la) || !Number.isFinite(ln) || la < -90 || la > 90 || ln < -180 || ln > 180) {
     return res.status(400).json({ error: "Invalid coordinates" });
+  }
+  if (user.role === 'HOSPITAL') {
+    (user as any).liveLocation = { lat: la, lng: ln };
+    res.json({ success: true, location: user.location, liveLocation: (user as any).liveLocation });
+    return;
   }
   user.location = { lat: la, lng: ln };
   res.json({ success: true, location: user.location });
