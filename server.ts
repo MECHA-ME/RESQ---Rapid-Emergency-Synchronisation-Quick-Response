@@ -729,6 +729,7 @@ app.post("/api/incidents/:id/hospital-response", (req, res) => {
   } else {
     if (!inc.rejectedHospitals.includes(hospitalId)) inc.rejectedHospitals.push(hospitalId);
   }
+  persistDb();
   res.json(inc);
 });
 

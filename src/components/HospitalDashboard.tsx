@@ -103,6 +103,16 @@ export default function HospitalDashboard({ state, userId, fetchState }: any) {
     }
   };
 
+  // Accepted triage awaiting the driver's destination choice.
+  // Without this the incident vanishes from our screen the moment we accept
+  // (it leaves pendingRequests but isn't selected to us yet).
+  const acceptedStandby = state.incidents.filter((i: Incident) =>
+    i.acceptedHospitals.includes(userId) &&
+    !i.rejectedHospitals.includes(userId) &&
+    (!i.selectedHospitalId || i.selectedHospitalId === userId) &&
+    !['REACHED_DESTINATION', 'COMPLETED', 'CANCELLED'].includes(i.status)
+  );
+
   // Incidents this hospital accepted, waiting for ambulance
   const incomingPatients = state.incidents.filter((i: Incident) =>
     i.selectedHospitalId === userId &&
@@ -148,9 +158,9 @@ export default function HospitalDashboard({ state, userId, fetchState }: any) {
           >
             <Building2 size={16} />
             <span>Live ER Intake</span>
-            {(incomingPatients.length > 0 || pendingRequests.length > 0 || ringMonitoring.length > 0) && (
+            {(incomingPatients.length > 0 || pendingRequests.length > 0 || ringMonitoring.length > 0 || acceptedStandby.length > 0) && (
               <span className="px-1.5 py-0.2 bg-white text-emerald-700 rounded-full text-[10px] font-mono font-black">
-                {incomingPatients.length + pendingRequests.length + ringMonitoring.length}
+                {incomingPatients.length + pendingRequests.length + ringMonitoring.length + acceptedStandby.length}
               </span>
             )}
           </button>
@@ -245,7 +255,7 @@ export default function HospitalDashboard({ state, userId, fetchState }: any) {
 
       {/* 2. Trauma Intake Standby / Live Incoming Transports Card (Middle of User Image) */}
       <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-2xs text-center flex flex-col items-center justify-center min-h-[140px]">
-        {incomingPatients.length === 0 && pendingRequests.length === 0 && ringMonitoring.length === 0 ? (
+        {incomingPatients.length === 0 && pendingRequests.length === 0 && ringMonitoring.length === 0 && acceptedStandby.length === 0 ? (
           <div className="space-y-2 animate-in fade-in duration-200">
             <div className="w-12 h-12 mx-auto rounded-2xl bg-gray-50 border border-gray-200 text-gray-400 flex items-center justify-center">
               <Building2 size={24} className="stroke-[1.7]" />
@@ -335,6 +345,50 @@ export default function HospitalDashboard({ state, userId, fetchState }: any) {
                           <Check size={14} />
                           <span>Accept &amp; Reserve Intake Bay</span>
                         </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Accepted triage — bay reserved, waiting for driver to lock destination */}
+            {acceptedStandby.length > 0 && (
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black tracking-wider text-emerald-700 uppercase flex items-center gap-1">
+                    <CheckCircle size={13} />
+                    Intake Bay Reserved ({acceptedStandby.length})
+                  </span>
+                  <span className="text-[9px] font-mono text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    ACCEPTED ✓
+                  </span>
+                </div>
+
+                {acceptedStandby.map((inc: Incident) => {
+                  const assignedDriver = state.users.find((u: any) => u.id === inc.assignedResponderId);
+                  return (
+                    <div key={inc.id} className="p-3.5 rounded-2xl border-2 border-emerald-300 bg-emerald-50/50 shadow-2xs space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-black text-emerald-950">
+                            {inc.conditionCategory || inc.condition || 'Emergency Condition'}
+                          </span>
+                          {inc.conditionAcuity && (
+                            <span className="px-2 py-0.5 rounded-md border text-[9px] font-black tracking-wider bg-white text-emerald-800 border-emerald-300">
+                              {inc.conditionAcuity}
+                            </span>
+                          )}
+                        </div>
+                        <StatusBadge status={inc.status} size="sm" />
+                      </div>
+                      <div className="text-xs text-gray-600 bg-white/80 p-2.5 rounded-xl border border-emerald-200/60">
+                        <span className="font-semibold text-emerald-800">
+                          Unit {assignedDriver?.name || 'Ambulance'} is on the way
+                        </span>
+                        <span className="text-gray-500">
+                          {' '}— live tracking and ETA appear here the moment the driver selects this hospital as destination.
+                        </span>
                       </div>
                     </div>
                   );
