@@ -134,13 +134,28 @@ export default function HospitalDashboard({ state, userId, fetchState }: any) {
     !state.feedbacks?.some((f: any) => f.incidentId === i.id && f.fromId === userId)
   );
 
+  // Triage response with visible busy + error states — on a slow phone link a
+  // silent tap looks like a dead button, so every outcome is shown explicitly.
+  const [respondingId, setRespondingId] = useState<string | null>(null);
+  const [respondError, setRespondError] = useState<{ id: string; msg: string } | null>(null);
+
   const respond = async (incidentId: string, response: 'ACCEPT' | 'REJECT') => {
-    await fetch(`/api/incidents/${incidentId}/hospital-response`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hospitalId: userId, response })
-    });
-    fetchState();
+    if (respondingId) return;
+    setRespondingId(incidentId);
+    setRespondError(null);
+    try {
+      const r = await fetch(`/api/incidents/${incidentId}/hospital-response`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hospitalId: userId, response })
+      });
+      if (!r.ok) throw new Error(`Server replied ${r.status}`);
+      await fetchState();
+    } catch (e: any) {
+      setRespondError({ id: incidentId, msg: `Could not send ${response === 'ACCEPT' ? 'Accept' : 'Reject'} — check connection and tap again.` });
+    } finally {
+      setRespondingId(null);
+    }
   };
 
   return (
@@ -331,19 +346,26 @@ export default function HospitalDashboard({ state, userId, fetchState }: any) {
                         </div>
                       </div>
 
+                      {respondError?.id === inc.id && (
+                        <p className="text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-1.5 text-center">
+                          {respondError.msg}
+                        </p>
+                      )}
                       <div className="flex items-center justify-end gap-2 pt-1">
                         <button
+                          disabled={respondingId === inc.id}
                           onClick={() => respond(inc.id, 'REJECT')}
-                          className="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 hover:bg-gray-100 text-xs font-bold rounded-xl transition-all active:scale-95"
+                          className="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 hover:bg-gray-100 text-xs font-bold rounded-xl transition-all active:scale-95 disabled:opacity-50"
                         >
-                          Reject / Divert
+                          {respondingId === inc.id ? 'Sending…' : 'Reject / Divert'}
                         </button>
                         <button
+                          disabled={respondingId === inc.id}
                           onClick={() => respond(inc.id, 'ACCEPT')}
-                          className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black rounded-xl shadow-xs transition-all active:scale-95 flex items-center gap-1.5"
+                          className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black rounded-xl shadow-xs transition-all active:scale-95 disabled:opacity-60 flex items-center gap-1.5"
                         >
                           <Check size={14} />
-                          <span>Accept &amp; Reserve Intake Bay</span>
+                          <span>{respondingId === inc.id ? 'Reserving…' : 'Accept & Reserve Intake Bay'}</span>
                         </button>
                       </div>
                     </div>
